@@ -1,0 +1,21 @@
+# run.sh が生成するハンズオン成果物
+out/
+agent/bootstrap.crt
+
+# OS / エディタ
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# 秘密鍵類が誤って混入したら commit を止めるための保険
+*.key
+*-key.pem
+*.priv
+.env
+.env.*
+!.env.example
+secrets.env

@@ -1,0 +1,30 @@
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.14.6
+    container_name: spire-compliance-server
+    networks:
+      - spire-net
+    volumes:
+      - ./server/server.conf:/run/spire/server/conf/server.conf:ro
+    command:
+      - -config
+      - /run/spire/server/conf/server.conf
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.14.6
+    container_name: spire-compliance-agent
+    depends_on:
+      - spire-server
+    networks:
+      - spire-net
+    volumes:
+      - ./agent/agent.conf:/run/spire/agent/conf/agent.conf:ro
+      - ./agent/bootstrap.crt:/run/spire/agent/conf/bootstrap.crt:ro
+    command:
+      - -config
+      - /run/spire/agent/conf/agent.conf
+      - -joinToken
+      - ${JOIN_TOKEN}
+
+networks:
+  spire-net:

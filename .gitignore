@@ -1,8 +1,8 @@
-# run.sh が生成するハンズオン成果物
+# Runtime artifacts produced by run.sh
 out/
 agent/bootstrap.crt
 
-# OS / エディタ
+# OS / editor noise
 .DS_Store
 *.swp
 *.swo
@@ -11,7 +11,7 @@ agent/bootstrap.crt
 .idea/
 *.iml
 
-# 秘密鍵類が誤って混入したら commit を止めるための保険
+# Defensive: stop commits if private keys accidentally land here
 *.key
 *-key.pem
 *.priv

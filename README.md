@@ -1,29 +1,39 @@
 # spiffe-compliance-deep-dive
 
-SPIRE が発行する SVID が「ほんとに SPIFFE 仕様に準拠してるか」を、コピペ 1 発で目視検証するためのリポジトリ。
+Verify in one shot that the SVIDs SPIRE issues actually conform to the SPIFFE spec.
 
-ある日「これ SPIFFE 準拠です」と書かれた実装を見て、改めて「準拠」の条件をパッと言えない自分に気づいた。`github.com/spiffe/spiffe` の standards を上から下まで読み直して、出てきた MUST / MUST NOT を全部リストアップして、SPIRE で発行した実物の証明書とトークンを openssl と jq でぶつけて確認したのがここ。
+The companion write-up walks through the spec (SPIFFE-ID, X.509-SVID, JWT-SVID, Workload API, Trust Bundle) and lists every MUST / MUST NOT requirement. This repo is the runnable part: it boots SPIRE locally, fetches real SVIDs, and checks each requirement with `openssl` and `jq`.
 
-仕様の解説は dev.to 側の記事 **「SPIFFE 準拠 Deep Dive」** に書いた。ここはその記事の Section 10 で使うハンズオン部分だけを切り出してある。
+## Run it
 
-## やってること
+```bash
+git clone https://github.com/0-draft/spiffe-compliance-deep-dive.git
+cd spiffe-compliance-deep-dive
+bash run.sh
+```
 
-`run.sh` が以下を全部やる。途中で Ctrl+C しても `trap cleanup EXIT` で `docker compose down -v` まで走るので、リソースが残らない。
+You need Docker (Desktop, Rancher Desktop, OrbStack, anything that gives you `docker compose`), plus `jq` and `openssl`. Takes about a minute.
 
-1. SPIRE Server を Docker で起動
-2. Trust Bundle を export して Agent に渡す
-3. Join Token を発行
-4. Workload Entry を 1 個登録（`unix:uid:0` を `spiffe://example.org/payments/web-fe` にマップ）
-5. SPIRE Agent を起動（join token で初回認証）
-6. X.509-SVID を取り出して openssl で開く
-7. SAN の URI、Basic Constraints、Key Usage、EKU を仕様と突き合わせる
-8. JWT-SVID を取り出して `.` で 3 分割、Base64URL デコード
-9. `alg` / `sub` / `aud` / `exp` を仕様と突き合わせる
-10. Trust Bundle の CA 証明書を openssl で開いて自己署名と path なし SPIFFE ID を確認
-11. Workload API の UDS が応答することを `spire-agent healthcheck` で確認
-12. 自動クリーンアップ
+`run.sh` always finishes with `docker compose down -v`, even on Ctrl+C, so nothing is left behind.
 
-X.509-SVID なら、たとえばこういう箇所を見る。
+Verified on macOS 14 + Rancher Desktop with SPIRE pinned to `v1.14.6` in `docker-compose.yml`.
+
+## What it checks
+
+1. Boot SPIRE Server
+2. Export its trust bundle and feed it to the Agent
+3. Generate a join token
+4. Register one workload entry: `unix:uid:0` -> `spiffe://example.org/payments/web-fe`
+5. Boot the SPIRE Agent
+6. Fetch an X.509-SVID, pull it to the host with `docker cp`
+7. Inspect it with `openssl x509 -text` and check URI SAN, Basic Constraints, Key Usage, EKU
+8. Fetch a JWT-SVID and Base64URL-decode header + payload
+9. Check `alg` / `sub` / `aud` / `exp`
+10. Open the Trust Bundle CA cert, confirm self-signed with a path-less SPIFFE ID
+11. Run `spire-agent healthcheck` to confirm the Workload API UDS is alive
+12. Tear everything down
+
+## What a passing X.509-SVID looks like
 
 ```text
 X509v3 Key Usage: critical
@@ -34,7 +44,9 @@ X509v3 Subject Alternative Name:
     URI:spiffe://example.org/payments/web-fe
 ```
 
-JWT-SVID ならこの形が出る。
+## What a passing JWT-SVID looks like
+
+Header:
 
 ```json
 {
@@ -42,6 +54,11 @@ JWT-SVID ならこの形が出る。
   "kid": "...",
   "typ": "JWT"
 }
+```
+
+Payload:
+
+```json
 {
   "aud": ["https://api.example.com"],
   "exp": 1778672723,
@@ -50,41 +67,27 @@ JWT-SVID ならこの形が出る。
 }
 ```
 
-仕様（X509-SVID 4 章 / JWT-SVID 3 章）と 1 対 1 で対応する。
+Both line up 1:1 with the spec (X509-SVID section 4, JWT-SVID section 3).
 
-## 動かす
-
-```bash
-git clone https://github.com/0-draft/spiffe-compliance-deep-dive.git
-cd spiffe-compliance-deep-dive
-bash run.sh
-```
-
-必要なのは Docker、jq、openssl。Docker は Desktop でも Rancher Desktop でも OrbStack でも何でもいい。所要 1 分くらい。
-
-動作確認は macOS 14 + Rancher Desktop で取った。SPIRE のバージョンは `docker-compose.yml` で `v1.14.6` に pin してある。SPIRE が breaking change を入れたときに記事と乖離しないように。
-
-## 中身
+## Layout
 
 ```text
-run.sh                   # 12 ステップの検証スクリプト
+run.sh                   # 12-step verification script
 docker-compose.yml       # SPIRE Server + Agent
-server/server.conf       # 自己署名 CA、sqlite、join_token attestor
+server/server.conf       # self-signed CA, sqlite, join_token attestor
 agent/agent.conf         # unix workload attestor
 ```
 
-## ハマったとこ
+## Things that bit me
 
-distroless image だったのを忘れて、`docker compose exec spire-agent cat ...` でハマった。`cat` も `ls` も入ってない。SVID の取り出しは `docker cp` 経由、socket の応答確認は `spire-agent healthcheck` で代用してる。
+- **The SPIRE images are distroless.** No `cat`, no `ls`, no shell. The script pulls SVIDs out with `docker cp` and confirms the UDS by running `spire-agent healthcheck` from inside the container.
+- **Named volumes are root-owned.** Mounting one at `/var/lib/spire/server/.data` crashes the server because the spire user (uid 1000) can't write to it. The script avoids persistence entirely and lets data live in the container's writable layer. For production, add an init container that chowns the volume.
+- **`/spire/...` is reserved.** Passing `-spiffeID spiffe://<td>/spire/...` to `spire-server token generate` is rejected. Use any other path (e.g. `/myagent`). After the agent attests, its real SPIFFE ID becomes `spiffe://<td>/spire/agent/join_token/<token>`, and that string is what you pass as `-parentID` when registering workload entries.
 
-Named volume を `/var/lib/spire/server/.data` にマウントしたら spire user (uid=1000) が書けなくて DB が開けなかった。デモ用途なので永続化を諦めて、コンテナの writable layer に置いてある。本番でやるなら named volume を事前 chown する init container を挟む。
+## Reusing the checks elsewhere
 
-`spire-server token generate -spiffeID` に `spiffe://td/spire/...` を渡すと「予約 namespace」と怒られる。`spire-server` 配下のパスは SPIRE 内部用なので、ユーザは別の path（例：`/myagent`）を使う。Agent が attestation した後の実際の SPIFFE ID は `spiffe://td/spire/agent/join_token/<token>` になるので、workload entry の `-parentID` はそっちを指定する必要がある。
-
-## 自前実装の検証に使いたい場合
-
-`run.sh` の ⑧ 〜 ⑪ の検証ロジックだけ抜き出せば、任意の SVID PEM / JWT / Bundle JSON に対して同じ検査を流せる。「SPIFFE 準拠です」と言ってる別実装が怪しいときに、突き合わせる用。
+Steps 8 through 11 of `run.sh` are pure `openssl` / `jq` / `bash`. If you suspect another implementation that claims SPIFFE compliance, point those same checks at its PEM / JWT / bundle JSON. The source of the SVID doesn't matter.
 
 ## License
 
-MIT。SPIFFE / SPIRE 自体のライセンスは各 upstream リポジトリ参照。
+MIT. SPIFFE and SPIRE have their own licenses; see the upstream repos.
